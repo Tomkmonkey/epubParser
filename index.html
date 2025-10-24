@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPUB 解析器示例</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .header {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .header p {
+            color: #7f8c8d;
+            font-size: 16px;
+        }
+        .upload-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+        }
+        .upload-btn {
+            padding: 8px 16px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .upload-btn:hover {
+            background: #2980b9;
+        }
+        #fileInput {
+            padding: 6px;
+        }
+        .status-section {
+            margin: 15px 0;
+            color: #34495e;
+            font-size: 14px;
+            height: 20px;
+        }
+        .error {
+            color: #e74c3c;
+        }
+        .success {
+            color: #27ae60;
+        }
+        .chapter-list-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .chapter-list-section h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        .chapter-item {
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.3s;
+            list-style: none;
+        }
+        .chapter-item:hover {
+            background: #e3f2fd;
+            color: #2196f3;
+        }
+        .chapter-item.active {
+            background: #2196f3;
+            color: white;
+        }
+        .content-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        .content-section h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        #chapterIframe {
+            width: 100%;
+            height: 500px;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            background: white;
+            padding: 10px;
+        }
+        .tip {
+            color: #7f8c8d;
+            font-size: 14px;
+            margin-top: 10px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 页面标题 -->
+        <div class="header">
+            <h1>EPUB 解析器</h1>
+            <p>上传 EPUB 文件，解析章节并预览内容</p>
+        </div>
+
+        <!-- 文件上传区域 -->
+        <div class="upload-section">
+            <label for="fileInput">选择 EPUB 文件：</label>
+            <input type="file" id="fileInput" accept=".epub" />
+            <button class="upload-btn" id="parseBtn" disabled>开始解析</button>
+            
+            <!-- 状态提示（解析中/成功/错误） -->
+            <div class="status-section" id="status"></div>
+        </div>
+
+        <!-- 章节列表区域 -->
+        <div class="chapter-list-section" style="display: none;">
+            <h3>章节列表（<span id="chapterCount">0</span> 章）</h3>
+            <ul id="chapterList"></ul>
+        </div>
+
+        <!-- 章节内容预览区域 -->
+        <div class="content-section" style="display: none;">
+            <h3>章节内容预览</h3>
+            <iframe id="chapterIframe" src="about:blank" frameborder="0"></iframe>
+            <p class="tip">提示：点击章节列表切换章节，页面关闭前会自动释放资源</p>
+        </div>
+    </div>
+
+    <script>
+        // ====================== EpubExtractor 类库 ======================
+        class EpubExtractor {
+            /**
+             * 初始化EpubExtractor
+             * @param {File|Blob} epubFile - EPUB文件对象
+             */
+            constructor(epubFile) {
+                if (!epubFile) {
+                    throw new Error('请提供EPUB文件');
+                }
+                this.epubFile = epubFile;
+                this.zip = null;
+                this.contentOpfPath = null;
+                this.chapters = [];
+                this.initialized = false;
+                // 存储已创建的Object URL，用于页面关闭时释放
+                this.objectUrls = [];
+            }
+
+            /**
+             * 初始化解析EPUB文件结构
+             * @returns {Promise<void>}
+             */
+            async init() {
+                if (this.initialized) return;
+
+                try {
+                    // 加载并解析EPUB文件（ZIP格式）
+                    const JSZip = await this.loadJSZip();
+                    const arrayBuffer = await this.readFileAsArrayBuffer(this.epubFile);
+                    this.zip = await JSZip.loadAsync(arrayBuffer);
+
+                    // 查找content.opf文件（EPUB的核心元数据文件）
+                    this.contentOpfPath = await this.findContentOpf();
+                    if (!this.contentOpfPath) {
+                        throw new Error('未找到content.opf文件，可能不是有效的EPUB文件');
+                    }
+
+                    // 解析content.opf获取章节信息
+                    await this.parseContentOpf();
+
+                    this.initialized = true;
+                } catch (error) {
+                    console.error('EPUB初始化失败:', error);
+                    throw error;
+                }
+            }
+
+            /**
+             * 动态加载JSZip库
+             * @returns {Promise<typeof JSZip>}
+             */
+            async loadJSZip() {
+                if (window.JSZip) {
+                    return window.JSZip;
+                }
+                
+                // 如果未加载，则动态导入
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+                document.head.appendChild(script);
+                
+                return new Promise((resolve, reject) => {
+                    script.onload = () => resolve(window.JSZip);
+                    script.onerror = () => reject(new Error('JSZip库加载失败，请检查网络'));
+                });
+            }
+
+            /**
+             * 读取文件为ArrayBuffer
+             * @param {File|Blob} file - 要读取的文件
+             * @returns {Promise<ArrayBuffer>}
+             */
+            readFileAsArrayBuffer(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = (err) => reject(new Error(`文件读取失败: ${err.message}`));
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+
+            /**
+             * 查找content.opf文件路径
+             * @returns {Promise<string|null>}
+             */
+            async findContentOpf() {
+                // 首先检查META-INF/container.xml
+                const containerPath = 'META-INF/container.xml';
+                const containerFile = this.zip.file(containerPath);
+                
+                if (containerFile) {
+                    try {
+                        const content = await containerFile.async('text');
+                        const parser = new DOMParser();
+                        const xmlDoc = parser.parseFromString(content, 'text/xml');
+                        // 处理XML解析错误
+                        if (xmlDoc.querySelector('parsererror')) {
+                            throw new Error('container.xml解析失败');
+                        }
+                        const rootfile = xmlDoc.querySelector('rootfile');
+                        if (rootfile) {
+                            return rootfile.getAttribute('full-path');
+                        }
+                    } catch (err) {
+                        console.warn('解析container.xml失败，尝试默认路径:', err);
+                    }
+                }
+                
+                // 如果找不到container.xml，尝试直接查找常见位置的content.opf
+                const possiblePaths = [
+                    'OEBPS/content.opf',
+                    'content.opf',
+                    'EPUB/content.opf'
+                ];
+                
+                for (const path of possiblePaths) {
+                    if (this.zip.file(path)) {
+                        return path;
+                    }
+                }
+                
+                return null;
+            }
+
+            /**
+             * 解析content.opf文件，提取章节信息
+             * @returns {Promise<void>}
+             */
+            async parseContentOpf() {
+                const contentOpfFile = this.zip.file(this.contentOpfPath);
+                if (!contentOpfFile) {
+                    throw new Error('找不到content.opf文件');
+                }
+                
+                try {
+                    const content = await contentOpfFile.async('text');
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(content, 'text/xml');
+                    // 处理XML解析错误
+                    if (xmlDoc.querySelector('parsererror')) {
+                        throw new Error('content.opf解析失败');
+                    }
+                    
+                    // 获取OPF目录
+                    const opfDir = this.contentOpfPath.lastIndexOf('/') > -1 
+                        ? this.contentOpfPath.substring(0, this.contentOpfPath.lastIndexOf('/') + 1) 
+                        : '';
+                    
+                    // 查找所有章节项（item）
+                    const items = xmlDoc.querySelectorAll('item[media-type="application/xhtml+xml"]');
+                    if (items.length === 0) {
+                        throw new Error('content.opf中未找到章节项（application/xhtml+xml类型）');
+                    }
+                    
+                    // 查找spine，确定章节顺序
+                    const spineItems = xmlDoc.querySelectorAll('spine itemref');
+                    if (spineItems.length === 0) {
+                        throw new Error('content.opf中未找到spine节点（章节顺序定义）');
+                    }
+                    const idRefs = Array.from(spineItems).map(item => item.getAttribute('idref'));
+                    
+                    // 构建章节列表
+                    this.chapters = idRefs.map((idRef, index) => {
+                        const item = xmlDoc.querySelector(`item[id="${idRef}"]`);
+                        if (item) {
+                            const href = item.getAttribute('href');
+                            const title = item.getAttribute('title') || `第${index + 1}章`; // 默认为"第X章"
+                            // 计算完整路径
+                            return {
+                                id: idRef,
+                                title: title,
+                                path: this.resolvePath(opfDir, href)
+                            };
+                        }
+                        return null;
+                    }).filter(Boolean);
+
+                    if (this.chapters.length === 0) {
+                        throw new Error('未提取到有效章节');
+                    }
+                } catch (err) {
+                    throw new Error(`解析content.opf失败: ${err.message}`);
+                }
+            }
+
+            /**
+             * 解析相对路径为完整路径
+             * @param {string} basePath - 基础路径
+             * @param {string} relativePath - 相对路径
+             * @returns {string} 完整路径
+             */
+            resolvePath(basePath, relativePath) {
+                // 处理绝对路径
+                if (relativePath.startsWith('/')) {
+                    return relativePath.substring(1); // 移除开头的斜杠，因为ZIP内部路径通常不包含
+                }
+                
+                // 处理相对路径
+                const baseParts = basePath.split('/').filter(part => part);
+                const relativeParts = relativePath.split('/').filter(part => part);
+                
+                for (let i = 0; i < relativeParts.length; i++) {
+                    if (relativeParts[i] === '..') {
+                        if (baseParts.length > 0) {
+                            baseParts.pop();
+                        }
+                    } else {
+                        baseParts.push(relativeParts[i]);
+                    }
+                }
+                
+                return baseParts.join('/');
+            }
+
+            /**
+             * 获取章节总数
+             * @returns {number} 章节总数
+             */
+            getChapterCount() {
+                return this.chapters.length;
+            }
+
+            /**
+             * 获取章节列表（含ID、标题、路径）
+             * @returns {Array<{id: string, title: string, path: string}>} 章节列表
+             */
+            getChapterList() {
+                return [...this.chapters]; // 返回副本，避免外部修改内部数据
+            }
+
+            /**
+             * 根据章节序号获取XHTML文件内容
+             * @param {number} chapterIndex - 章节序号（从0开始）
+             * @returns {Promise<Blob>} XHTML文件的Blob对象
+             */
+            async getChapterXhtml(chapterIndex) {
+                if (!this.initialized) {
+                    throw new Error('请先调用init()方法初始化');
+                }
+                
+                if (chapterIndex < 0 || chapterIndex >= this.chapters.length) {
+                    throw new Error(`章节序号无效，有效范围是0到${this.chapters.length - 1}`);
+                }
+                
+                const chapter = this.chapters[chapterIndex];
+                const xhtmlFile = this.zip.file(chapter.path);
+                
+                if (!xhtmlFile) {
+                    throw new Error(`找不到章节文件: ${chapter.path}`);
+                }
+                
+                // 获取文件内容并转换为Blob
+                try {
+                    const content = await xhtmlFile.async('arraybuffer');
+                    return new Blob([content], { type: 'application/xhtml+xml' });
+                } catch (err) {
+                    throw new Error(`读取章节文件失败: ${err.message}`);
+                }
+            }
+
+            /**
+             * 根据章节序号获取XHTML文件的URL（可用于iframe等）
+             * @param {number} chapterIndex - 章节序号（从0开始）
+             * @returns {Promise<string>} 可访问的URL
+             */
+            async getChapterXhtmlUrl(chapterIndex) {
+                const blob = await this.getChapterXhtml(chapterIndex);
+                const url = URL.createObjectURL(blob);
+                this.objectUrls.push(url); // 记录URL，用于后续释放
+                return url;
+            }
+
+            /**
+             * 释放所有已创建的Object URL（避免内存泄漏）
+             */
+            releaseResources() {
+                this.objectUrls.forEach(url => URL.revokeObjectURL(url));
+                this.objectUrls = [];
+                console.log('已释放所有Object URL资源');
+            }
+        }
+
+        // ====================== 页面交互逻辑 ======================
+        document.addEventListener('DOMContentLoaded', () => {
+            // 获取DOM元素
+            const fileInput = document.getElementById('fileInput');
+            const parseBtn = document.getElementById('parseBtn');
+            const status = document.getElementById('status');
+            const chapterListSection = document.querySelector('.chapter-list-section');
+            const chapterList = document.getElementById('chapterList');
+            const chapterCount = document.getElementById('chapterCount');
+            const contentSection = document.querySelector('.content-section');
+            const chapterIframe = document.getElementById('chapterIframe');
+
+            // 存储EpubExtractor实例
+            let epubExtractor = null;
+
+            // 1. 文件选择事件：启用解析按钮
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length > 0) {
+                    parseBtn.disabled = false;
+                    status.textContent = ''; // 清空状态提示
+                } else {
+                    parseBtn.disabled = true;
+                    status.textContent = '';
+                }
+            });
+
+            // 2. 解析按钮点击事件：初始化解析
+            parseBtn.addEventListener('click', async () => {
+                const epubFile = fileInput.files[0];
+                if (!epubFile) {
+                    showStatus('请先选择EPUB文件', 'error');
+                    return;
+                }
+
+                // 重置状态
+                parseBtn.disabled = true;
+                fileInput.disabled = true;
+                showStatus('正在解析EPUB文件...', 'success');
+                chapterListSection.style.display = 'none';
+                contentSection.style.display = 'none';
+                chapterList.innerHTML = '';
+
+                try {
+                    // 初始化解析器
+                    epubExtractor = new EpubExtractor(epubFile);
+                    await epubExtractor.init();
+
+                    // 解析成功：显示章节列表
+                    const chapters = epubExtractor.getChapterList();
+                    chapterCount.textContent = epubExtractor.getChapterCount();
+                    renderChapterList(chapters);
+
+                    // 显示区域
+                    chapterListSection.style.display = 'block';
+                    contentSection.style.display = 'block';
+                    showStatus(`解析成功！共找到 ${epubExtractor.getChapterCount()} 个章节`, 'success');
+
+                    // 默认加载第0章
+                    if (chapters.length > 0) {
+                        await loadChapter(0);
+                    }
+                } catch (err) {
+                    // 解析失败：显示错误信息
+                    showStatus(`解析失败: ${err.message}`, 'error');
+                    // 恢复按钮状态
+                    parseBtn.disabled = false;
+                    fileInput.disabled = false;
+                }
+            });
+
+            // 3. 渲染章节列表
+            function renderChapterList(chapters) {
+                chapterList.innerHTML = '';
+                chapters.forEach((chapter, index) => {
+                    const li = document.createElement('li');
+                    li.className = 'chapter-item';
+                    li.textContent = `${index + 1}. ${chapter.title}`;
+                    li.dataset.index = index; // 存储章节序号
+                    // 点击章节加载内容
+                    li.addEventListener('click', async () => {
+                        // 移除其他章节的active类
+                        document.querySelectorAll('.chapter-item').forEach(item => {
+                            item.classList.remove('active');
+                        });
+                        // 添加当前章节的active类
+                        li.classList.add('active');
+                        // 加载章节内容
+                        await loadChapter(index);
+                    });
+                    chapterList.appendChild(li);
+                });
+            }
+
+            // 4. 加载章节内容到iframe
+            async function loadChapter(chapterIndex) {
+                try {
+                    showStatus(`正在加载第 ${chapterIndex + 1} 章...`, 'success');
+                    const chapterUrl = await epubExtractor.getChapterXhtmlUrl(chapterIndex);
+                    chapterIframe.src = chapterUrl;
+                    showStatus(`第 ${chapterIndex + 1} 章加载完成`, 'success');
+                } catch (err) {
+                    showStatus(`加载章节失败: ${err.message}`, 'error');
+                    chapterIframe.src = 'about:blank';
+                }
+            }
+
+            // 5. 显示状态提示（成功/错误）
+            function showStatus(text, type = 'default') {
+                status.textContent = text;
+                status.className = 'status-section';
+                if (type === 'error') {
+                    status.classList.add('error');
+                } else if (type === 'success') {
+                    status.classList.add('success');
+                }
+            }
+
+            // 6. 页面关闭时释放资源（避免内存泄漏）
+            window.addEventListener('beforeunload', () => {
+                if (epubExtractor) {
+                    epubExtractor.releaseResources();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
